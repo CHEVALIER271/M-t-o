@@ -15,6 +15,7 @@
 }
 :root[data-theme="dark"] { --bg:#121712; --card:#1c241d; --text:#e6efe6; --muted:#9bb09d; --accent:#7bc67e; --line:#2c372d; --bad:#ef6c6c; --warn:#ffb74d; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, sans-serif; }
 main { max-width: 1000px; margin: 0 auto; padding: 16px; }
 h1 { font-size: 1.4rem; margin: 8px 0 12px; }
@@ -46,20 +47,29 @@ td.avg { font-weight: 700; color: var(--accent); }
   <h1>JP Météo, Champion farmer's app</h1>
 
   <div class="card">
-    <form id="search-form" class="row">
+    <div class="row">
+      <span class="muted" id="place-label" style="flex:1 1 auto">Aucun lieu sélectionné.</span>
+      <button type="button" id="change-place" class="secondary" hidden>Changer</button>
+    </div>
+    <form id="search-form" class="row" style="margin-top:8px">
       <input id="place" type="text" placeholder="Ville ou commune (ex. Lyon)" required>
       <button type="submit">Rechercher</button>
       <button type="button" id="geo" class="secondary">Ma position</button>
     </form>
-    <p class="muted" id="place-label">Aucun lieu sélectionné.</p>
   </div>
 
   <div class="card">
-    <div class="row">
-      <input id="vc-key" type="password" placeholder="Clé API Visual Crossing (optionnel)">
-      <button type="button" id="save-key" class="secondary">Enregistrer la clé</button>
+    <div class="row" id="key-saved" hidden>
+      <span class="muted" style="flex:1 1 auto">🔑 Clé Visual Crossing enregistrée</span>
+      <button type="button" id="change-key" class="secondary">Changer</button>
     </div>
-    <p class="muted">Visual Crossing est la 6e source. Clé gratuite sur visualcrossing.com. Sans clé, il reste 5 sources.</p>
+    <div id="key-form">
+      <div class="row">
+        <input id="vc-key" type="password" placeholder="Clé API Visual Crossing (optionnel)">
+        <button type="button" id="save-key" class="secondary">Enregistrer la clé</button>
+      </div>
+      <p class="muted">Visual Crossing est la 6e source. Clé gratuite sur visualcrossing.com. Sans clé, il reste 5 sources.</p>
+    </div>
   </div>
 
   <div class="card">
@@ -453,8 +463,18 @@ function populateDays() {
   sel.value = state.day;
 }
 
+// Formulaire de recherche replié dès qu'un lieu est choisi ; le bouton « Changer » le rouvre
+function showPlaceForm(open) {
+  document.getElementById('search-form').hidden = !open;
+  document.getElementById('change-place').hidden = open;
+  if (open) document.getElementById('place').focus();
+}
+
+document.getElementById('change-place').addEventListener('click', () => showPlaceForm(true));
+
 function setLocation(loc) {
-  document.getElementById('place-label').textContent = `Lieu : ${loc.label}`;
+  document.getElementById('place-label').textContent = `📍 Lieu : ${loc.label}`;
+  showPlaceForm(false);
   storage.set(LOC_KEY, JSON.stringify(loc));
   refresh(loc).catch(err => {
     document.getElementById('sources-status').innerHTML = `<span class="ko">Erreur : ${err.message}</span>`;
@@ -490,9 +510,24 @@ document.getElementById('geo').addEventListener('click', () => {
   );
 });
 
+// Zone de la clé repliée dès qu'une clé est enregistrée ; « Changer » la rouvre
+function showKeyForm(open) {
+  document.getElementById('key-form').hidden = !open;
+  document.getElementById('key-saved').hidden = open;
+}
+
+document.getElementById('change-key').addEventListener('click', () => {
+  showKeyForm(true);
+  document.getElementById('vc-key').focus();
+});
+
 document.getElementById('save-key').addEventListener('click', () => {
   const value = document.getElementById('vc-key').value.trim();
-  if (value) storage.set(VC_KEY, value);
+  if (value) {
+    storage.set(VC_KEY, value);
+    document.getElementById('vc-key').value = '';
+    showKeyForm(false);
+  }
   const loc = JSON.parse(storage.get(LOC_KEY) || 'null');
   if (loc) refresh(loc).catch(() => {});
 });
@@ -502,7 +537,8 @@ if ('serviceWorker' in navigator) {
 }
 
 (function init() {
-  if (storage.get(VC_KEY)) document.getElementById('vc-key').placeholder = 'Clé enregistrée';
+  showKeyForm(!storage.get(VC_KEY));
+  if (storage.get(VC_KEY)) document.getElementById('vc-key').placeholder = 'Nouvelle clé (remplace l\'ancienne)';
   const loc = JSON.parse(storage.get(LOC_KEY) || 'null');
   if (loc) setLocation(loc);
 })();

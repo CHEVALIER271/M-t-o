@@ -452,7 +452,13 @@ async function refresh(loc) {
 
   if (!key) statusParts.push('<span class="muted">Visual Crossing non configuré</span>');
   if (state.ok.length < 3) statusParts.push('<span class="ko">⚠ Moins de 3 sources : moyenne peu fiable</span>');
-  statusEl.innerHTML = statusParts.join(' · ');
+  // Résumé compact ; le détail source par source se déplie au clic
+  const nbOk = state.ok.length, nbTotal = active.length;
+  const failed = nbOk < nbTotal;
+  const summary = `<span class="${failed ? 'ko' : 'ok'}">${failed ? '⚠' : '✔'} ${nbOk}/${nbTotal} sources chargées</span>` +
+    (state.ok.length < 3 ? ' <span class="ko">· moyenne peu fiable</span>' : '');
+  statusEl.innerHTML = `<details${failed ? ' open' : ''}><summary style="cursor:pointer">${summary}</summary>` +
+    `<div style="margin-top:4px">${statusParts.join(' · ')}</div></details>`;
 
   populateDays();
   renderFrostSummary();

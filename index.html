@@ -70,7 +70,7 @@ td.avg { font-weight: 700; color: var(--accent); }
         <input id="vc-key" type="password" placeholder="Clé API Visual Crossing (optionnel)">
         <button type="button" id="save-key" class="secondary">Enregistrer la clé</button>
       </div>
-      <p class="muted">Visual Crossing est la 5e source. Clé gratuite sur visualcrossing.com. Sans clé, il reste 4 sources.</p>
+      <p class="muted">Visual Crossing est la 6e source. Clé gratuite sur visualcrossing.com. Sans clé, il reste 5 sources.</p>
     </div>
   </div>
 
@@ -87,6 +87,10 @@ td.avg { font-weight: 700; color: var(--accent); }
   <div class="card">
     <h2 id="avg-title">Moyenne des sources</h2>
     <div class="table-wrap" id="avg-table"><p class="muted">Choisissez un lieu pour afficher les prévisions.</p></div>
+    <details style="margin-top:8px">
+      <summary class="muted" style="cursor:pointer">Pondération des sources dans la moyenne</summary>
+      <div id="weights-info" class="muted" style="margin-top:6px"></div>
+    </details>
   </div>
 
   <div class="card">
@@ -218,6 +222,7 @@ async function fetchVisualCrossing(lat, lon, key) {
 const SOURCES = [
   { name: 'Open-Meteo', fetch: (lat, lon) => fetchOpenMeteo(lat, lon) },
   { name: 'Météo-France (AROME/ARPEGE)', fetch: (lat, lon) => fetchOpenMeteo(lat, lon, 'meteofrance_seamless') },
+  { name: 'GFS (NOAA, États-Unis)', fetch: (lat, lon) => fetchOpenMeteo(lat, lon, 'gfs_seamless') },
   { name: 'ECMWF (Europe)', fetch: (lat, lon) => fetchOpenMeteo(lat, lon, 'ecmwf_ifs025') },
   { name: 'MET Norway', fetch: (lat, lon) => fetchMetNo(lat, lon) },
   { name: 'Visual Crossing', fetch: (lat, lon, key) => fetchVisualCrossing(lat, lon, key), needsKey: true }
@@ -270,13 +275,80 @@ function nextDayKeys() {
   });
 }
 
-function averageValues(list) {
+/* ---------- Pondération des sources ----------
+   Poids calculés par un test rétrospectif à Genneteil (prévisions passées d'Open-Meteo comparées à l'analyse ERA5,
+   sept.-nov. 2026 et sept. 2025-mars 2026), puis atténués de 50 % vers l'égalité. Validés sur des données non vues :
+   ils améliorent légèrement T min, pluie et vent. Ils n'aident pas pour T max et rafales (moyenne simple), et
+   humidité / ETP n'ont pas été testées (moyenne simple). Les sources absentes du test (MET Norway, Visual Crossing)
+   reçoivent le poids moyen des autres. Échéance : jour 0-1 = court, 2-3 = moyen, 4 et + = long. */
+const WEIGHTS = {
+  tmin: {
+    court: { 'Open-Meteo': 0.276, 'Météo-France (AROME/ARPEGE)': 0.210, 'GFS (NOAA, États-Unis)': 0.214, 'ECMWF (Europe)': 0.300 },
+    moyen: { 'Open-Meteo': 0.265, 'Météo-France (AROME/ARPEGE)': 0.226, 'GFS (NOAA, États-Unis)': 0.227, 'ECMWF (Europe)': 0.282 },
+    long: { 'Open-Meteo': 0.329, 'GFS (NOAA, États-Unis)': 0.317, 'ECMWF (Europe)': 0.354 }
+  },
+  precip: {
+    court: { 'Open-Meteo': 0.239, 'Météo-France (AROME/ARPEGE)': 0.244, 'GFS (NOAA, États-Unis)': 0.255, 'ECMWF (Europe)': 0.262 },
+    moyen: { 'Open-Meteo': 0.248, 'Météo-France (AROME/ARPEGE)': 0.244, 'GFS (NOAA, États-Unis)': 0.245, 'ECMWF (Europe)': 0.263 },
+    long: { 'Open-Meteo': 0.323, 'GFS (NOAA, États-Unis)': 0.370, 'ECMWF (Europe)': 0.307 }
+  },
+  wind: {
+    court: { 'Open-Meteo': 0.174, 'Météo-France (AROME/ARPEGE)': 0.264, 'GFS (NOAA, États-Unis)': 0.186, 'ECMWF (Europe)': 0.376 },
+    moyen: { 'Open-Meteo': 0.214, 'Météo-France (AROME/ARPEGE)': 0.254, 'GFS (NOAA, États-Unis)': 0.200, 'ECMWF (Europe)': 0.332 },
+    long: { 'Open-Meteo': 0.327, 'GFS (NOAA, États-Unis)': 0.300, 'ECMWF (Europe)': 0.374 }
+  }
+};
+const bucketOf = i => (i <= 1 ? 'court' : i <= 3 ? 'moyen' : 'long');
+const dayIdx = key => Math.max(0, nextDayKeys().indexOf(key));
+
+function sourceWeight(name, crit, idx) {
+  const t = WEIGHTS[crit]?.[bucketOf(idx)];
+  if (!t) return 1; // critère non pondéré : moyenne simple
+  if (name in t) return t[name];
+  const v = Object.values(t);
+  return v.reduce((a, b) => a + b, 0) / v.length; // source non testée : poids moyen
+}
+
+function wmean(list, k, idx) {
+  let num = 0, den = 0;
+  for (const v of list) {
+    if (v[k] == null || Number.isNaN(v[k])) continue;
+    const w = sourceWeight(v._src, k, idx);
+    num += w * v[k]; den += w;
+  }
+  return den ? num / den : null;
+}
+
+// list : valeurs des sources avec _src (nom de la source) ; idx : n° du jour (0 = aujourd'hui)
+function averageValues(list, idx = 0) {
   const out = {};
-  for (const k of ['tmin', 'tmax', 'temp', 'wind', 'gust', 'precip', 'hum']) out[k] = mean(list.map(v => v[k]));
+  for (const k of ['tmin', 'tmax', 'temp', 'wind', 'gust', 'precip', 'hum', 'et0']) out[k] = wmean(list, k, idx);
   out.anyMin = min(list.map(v => v.tmin ?? v.temp));
   out.n = list.length;
   return out;
 }
+
+function renderWeightsInfo() {
+  const names = ['Open-Meteo', 'Météo-France (AROME/ARPEGE)', 'GFS (NOAA, États-Unis)', 'ECMWF (Europe)'];
+  const crits = [['tmin', 'T min'], ['precip', 'Pluie'], ['wind', 'Vent moyen']];
+  const buckets = [['court', 'Jours 0-1'], ['moyen', 'Jours 2-3'], ['long', 'Jours 4 et +']];
+  const rows = [];
+  for (const [c, cl] of crits) for (const [b, bl] of buckets) {
+    const t = WEIGHTS[c][b];
+    rows.push(`<tr><td>${cl}</td><td>${bl}</td>` + names.map(n => `<td>${n in t ? Math.round(t[n] * 100) + ' %' : '–'}</td>`).join('') + '</tr>');
+  }
+  document.getElementById('weights-info').innerHTML =
+    '<p>La moyenne n\'est pas toujours « une voix par source ». Un test rétrospectif à Genneteil (sept. 2025 à nov. 2026) compare les prévisions passées à ce qui s\'est réellement passé. ' +
+    'Les poids ci-dessous sont déduits de l\'erreur de chaque modèle, atténués de moitié vers l\'égalité, et validés sur des données non vues. ' +
+    'Ils ne sont appliqués que pour T min, pluie et vent, où ils améliorent légèrement la moyenne. T max, rafales, humidité et ETP : moyenne simple. ' +
+    'MET Norway et Visual Crossing n\'ont pas pu être testés : poids moyen.</p>' +
+    '<div class="table-wrap">' + tableHtml(['Critère', 'Échéance', 'Open-Meteo', 'Météo-France', 'GFS', 'ECMWF'], rows) + '</div>' +
+    '<p>« – » : modèle sans donnée à cette échéance. Gain mesuré : faible (quelques centièmes d\'erreur), la pondération est un affinage, pas une transformation.</p>';
+}
+
+// Valeurs journalières de toutes les sources pour un jour, marquées par source
+const tagSrc = (s, v) => (v ? { ...v, _src: s.name } : null);
+const dayValues = k => state.ok.map(s => tagSrc(s, s.data.daily.get(k))).filter(Boolean);
 
 // Colonnes selon le mode
 const DAY_HEAD = ['Jour', 'Lune', 'T min', 'T max', 'Vent moy.', 'Rafales', 'Pluie', 'Humidité', 'Gel'];
@@ -358,8 +430,8 @@ function render() {
     document.getElementById('avg-title').textContent = 'Moyenne des sources, jour par jour';
     const head = [...DAY_HEAD, 'Sources'];
     avgEl.innerHTML = tableHtml(head, keys.map(k => {
-      const vals = state.ok.map(s => s.data.daily.get(k)).filter(Boolean);
-      return dayRow(k, vals.length ? averageValues(vals) : null, { avg: true, total });
+      const vals = dayValues(k);
+      return dayRow(k, vals.length ? averageValues(vals, dayIdx(k)) : null, { avg: true, total });
     }));
     // Comparatif jour par jour : un bloc par jour, une ligne par source
     const cmpHead = ['Source', 'T min', 'T max', 'Vent moy.', 'Rafales', 'Pluie', 'Humidité', 'Gel'];
@@ -397,8 +469,8 @@ function render() {
     `Moyenne des sources, ${dayLabel(dayKey)} (${step === 1 ? 'toutes les heures' : 'toutes les 3 heures'})`;
   const head = [...HOUR_HEAD, 'Sources'];
   avgEl.innerHTML = tableHtml(head, hours.map(h => {
-    const vals = state.ok.map(s => slotValues(s.data, dayKey, h, step)).filter(Boolean);
-    return hourRow(labelOf(h), vals.length ? averageValues(vals) : null, { avg: true, total });
+    const vals = state.ok.map(s => tagSrc(s, slotValues(s.data, dayKey, h, step))).filter(Boolean);
+    return hourRow(labelOf(h), vals.length ? averageValues(vals, dayIdx(dayKey)) : null, { avg: true, total });
   }));
   cmpEl.innerHTML = state.all.map(s => {
     const body = s.data
@@ -417,9 +489,9 @@ function renderFrostSummary() {
   if (!state.ok.length) { el.innerHTML = ''; return; }
   const risky = [];
   for (const k of nextDayKeys()) {
-    const vals = state.ok.map(s => s.data.daily.get(k)).filter(Boolean);
+    const vals = dayValues(k);
     if (!vals.length) continue;
-    const t = mean(vals.map(v => v.tmin));
+    const t = averageValues(vals, dayIdx(k)).tmin;
     if (t != null && t <= 2) risky.push(`${dayLabel(k)} (${t.toFixed(1)} °C)`);
   }
   el.innerHTML = risky.length
@@ -550,6 +622,7 @@ if ('serviceWorker' in navigator) {
 }
 
 (function init() {
+  renderWeightsInfo();
   showKeyForm(!storage.get(VC_KEY));
   if (storage.get(VC_KEY)) document.getElementById('vc-key').placeholder = 'Nouvelle clé (remplace l\'ancienne)';
   const loc = JSON.parse(storage.get(LOC_KEY) || 'null');

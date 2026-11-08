@@ -60,7 +60,9 @@ td.avg { font-weight: 700; color: var(--accent); }
 
   <div class="card">
     <div class="row" id="key-saved" hidden>
-      <span class="muted" style="flex:1 1 auto">🔑 Clé Visual Crossing<br>enregistrée</span>
+      <span class="muted" style="flex:1 1 auto; display:flex; gap:.4em">
+        <span>🔑</span><span>Clé Visual Crossing<br>enregistrée</span>
+      </span>
       <button type="button" id="change-key" class="secondary" style="margin-left:auto">Changer</button>
     </div>
     <div id="key-form">
@@ -75,8 +77,11 @@ td.avg { font-weight: 700; color: var(--accent); }
   <div class="card">
     <div class="row" role="group" aria-label="Pas de temps">
       <button type="button" class="tab" data-mode="day" aria-pressed="true">Par jour</button>
-      <button type="button" class="tab" data-mode="3h" aria-pressed="false">Toutes les 3 h</button>
-      <button type="button" class="tab" data-mode="1h" aria-pressed="false">Toutes les heures</button>
+      <button type="button" class="tab" data-mode="hour" aria-pressed="false">Par heure</button>
+      <select id="step-select" aria-label="Pas de temps" hidden>
+        <option value="3">Toutes les 3 h</option>
+        <option value="1">Toutes les heures</option>
+      </select>
       <select id="day-select" aria-label="Jour affiché" hidden></select>
     </div>
     <div id="sources-status" class="status muted"></div>
@@ -330,7 +335,7 @@ function slotValues(src, dayKey, hour, step) {
   return aggregate(entries);
 }
 
-const state = { loc: null, ok: [], all: [], mode: 'day', day: null };
+const state = { loc: null, ok: [], all: [], mode: 'day', step: 3, day: null };
 
 function render() {
   const avgEl = document.getElementById('avg-table');
@@ -342,6 +347,7 @@ function render() {
   const keys = nextDayKeys();
   const total = state.ok.length;
   daySel.hidden = state.mode === 'day';
+  document.getElementById('step-select').hidden = state.mode === 'day';
 
   if (!total) {
     avgEl.innerHTML = '<p class="ko">Aucune source disponible.</p>';
@@ -384,7 +390,7 @@ function render() {
   }
 
   // Modes horaires
-  const step = state.mode === '3h' ? 3 : 1;
+  const step = state.step;
   const dayKey = state.day && keys.includes(state.day) ? state.day : keys[0];
   const hours = Array.from({ length: 24 / step }, (_, i) => i * step);
   const labelOf = h => step === 1 ? `${pad(h)} h` : `${pad(h)}–${pad((h + 3) % 24)} h`;
@@ -487,6 +493,7 @@ document.querySelectorAll('button.tab').forEach(btn => btn.addEventListener('cli
   render();
 }));
 
+document.getElementById('step-select').addEventListener('change', e => { state.step = Number(e.target.value); render(); });
 document.getElementById('day-select').addEventListener('change', e => { state.day = e.target.value; render(); });
 
 document.getElementById('search-form').addEventListener('submit', async e => {

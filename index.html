@@ -495,6 +495,10 @@ document.getElementById('save-key').addEventListener('click', () => {
   if (loc) refresh(loc).catch(() => {});
 });
 
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => { /* installation indisponible */ });
+}
+
 (function init() {
   if (storage.get(VC_KEY)) document.getElementById('vc-key').placeholder = 'Clé enregistrée';
   const loc = JSON.parse(storage.get(LOC_KEY) || 'null');

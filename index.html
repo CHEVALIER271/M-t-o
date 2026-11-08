@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Météo agriculteur 7 jours</title>
+<style>
+:root { --bg:#f4f7f2; --card:#ffffff; --text:#1d2b1f; --muted:#5f6f62; --accent:#2e7d32; --line:#dfe6dd; --bad:#c62828; --warn:#e65100; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg:#121712; --card:#1c241d; --text:#e6efe6; --muted:#9bb09d; --accent:#7bc67e; --line:#2c372d; --bad:#ef6c6c; --warn:#ffb74d; }
+}
+:root[data-theme="dark"] { --bg:#121712; --card:#1c241d; --text:#e6efe6; --muted:#9bb09d; --accent:#7bc67e; --line:#2c372d; --bad:#ef6c6c; --warn:#ffb74d; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, sans-serif; }
+main { max-width: 1000px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.4rem; margin: 8px 0 12px; }
+h2 { font-size: 1.05rem; margin: 0 0 10px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+input, select { flex: 1 1 180px; padding: 10px; font-size: 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
+select { flex: 0 1 auto; }
+button { padding: 10px 14px; font-size: 1rem; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button.tab { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button.tab[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.muted { color: var(--muted); font-size: .9rem; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+th, td { padding: 7px 6px; text-align: center; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+td.avg { font-weight: 700; color: var(--accent); }
+.status { font-size: .88rem; margin: 4px 0; }
+.ok { color: var(--accent); }
+.ko { color: var(--bad); font-weight: 600; }
+.warn { color: var(--warn); font-weight: 600; }
+.moon { font-size: 1.1rem; }
+.src-title { margin: 14px 0 6px; font-size: .98rem; color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Météo agriculteur : moyenne sur 7 jours</h1>
+
+  <div class="card">
+    <form id="search-form" class="row">
+      <input id="place" type="text" placeholder="Ville ou commune (ex. Lyon)" required>
+      <button type="submit">Rechercher</button>
+      <button type="button" id="geo" class="secondary">Ma position</button>
+    </form>
+    <p class="muted" id="place-label">Aucun lieu sélectionné.</p>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <input id="vc-key" type="password" placeholder="Clé API Visual Crossing (optionnel)">
+      <button type="button" id="save-key" class="secondary">Enregistrer la clé</button>
+    </div>
+    <p class="muted">Visual Crossing est la 4e source. Clé gratuite sur visualcrossing.com. Sans clé, il reste 3 sources.</p>
+  </div>
+
+  <div class="card">
+    <div class="row" role="group" aria-label="Pas de temps">
+      <button type="button" class="tab" data-mode="day" aria-pressed="true">Par jour</button>
+      <button type="button" class="tab" data-mode="3h" aria-pressed="false">Toutes les 3 h</button>
+      <button type="button" class="tab" data-mode="1h" aria-pressed="false">Toutes les heures</button>
+      <select id="day-select" aria-label="Jour affiché" hidden></select>
+    </div>
+    <div id="sources-status" class="status muted"></div>
+    <div id="frost-summary" class="status"></div>
+  </div>
+
+  <div class="card">
+    <h2 id="avg-title">Moyenne des sources</h2>
+    <div class="table-wrap" id="avg-table"><p class="muted">Choisissez un lieu pour afficher les prévisions.</p></div>
+  </div>
+
+  <div class="card">
+    <h2>Comparatif des sources</h2>
+    <div id="compare"></div>
+    <p class="muted" id="hint"></p>
+  </div>
+</main>
+
+<script>
+const LOC_KEY = 'meteo.location';
+const VC_KEY = 'meteo.visualcrossingKey';
+const DAYS = 7;
+
+const storage = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* stockage indisponible */ } }
+};
+
+async function getJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+const pad = n => String(n).padStart(2, '0');
+const localDate = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+/* ---------- Agrégats ---------- */
+const nums = (arr) => arr.filter(v => v != null && !Number.isNaN(v));
+const mean = arr => { const v = nums(arr); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+const sum = arr => { const v = nums(arr); return v.length ? v.reduce((a, b) => a + b, 0) : null; };
+const max = arr => { const v = nums(arr); return v.length ? Math.max(...v) : null; };
+const min = arr => { const v = nums(arr); return v.length ? Math.min(...v) : null; };
+
+// entrées horaires {temp, hum, wind, gust, precip} -> valeurs agrégées
+function aggregate(entries) {
+  if (!entries.length) return null;
+  const c = k => entries.map(e => e[k]);
+  return { tmin: min(c('temp')), tmax: max(c('temp')), temp: mean(c('temp')),
+           wind: mean(c('wind')), gust: max(c('gust')), precip: sum(c('precip')), hum: mean(c('hum')) };
+}
+
+// Map "AAAA-MM-JJTHH" -> entrée ; renvoie Map jour -> entrées
+function groupByDay(hourly) {
+  const days = new Map();
+  for (const [key, e] of hourly) {
+    const d = key.slice(0, 10);
+    if (!days.has(d)) days.set(d, []);
+    days.get(d).push(e);
+  }
+  return days;
+}
+
+/* ---------- Sources : { daily: Map jour -> valeurs, hourly: Map clé horaire -> entrée } ---------- */
+async function fetchOpenMeteo(lat, lon, model) {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    (model ? `&models=${model}` : '') +
+    `&daily=temperature_2m_min,temperature_2m_max,precipitation_sum,wind_gusts_10m_max` +
+    `&hourly=temperature_2m,precipitation,relative_humidity_2m,wind_speed_10m,wind_gusts_10m` +
+    `&wind_speed_unit=kmh&timezone=auto&forecast_days=${DAYS}`;
+  const data = await getJson(url);
+  const h = data.hourly;
+  const hourly = new Map();
+  h.time.forEach((t, i) => {
+    if (h.temperature_2m[i] == null) return; // modèle sans données à cette échéance
+    hourly.set(t.slice(0, 13), {
+      temp: h.temperature_2m[i], precip: h.precipitation[i], hum: h.relative_humidity_2m[i],
+      wind: h.wind_speed_10m[i], gust: h.wind_gusts_10m[i]
+    });
+  });
+  const byDay = groupByDay(hourly);
+  const daily = new Map();
+  data.daily.time.forEach((date, i) => {
+    if (data.daily.temperature_2m_min[i] == null) return;
+    const a =aggregate(byDay.get(date) ?? []) ?? {};
+    daily.set(date, {
+      tmin: data.daily.temperature_2m_min[i], tmax: data.daily.temperature_2m_max[i],
+      precip: data.daily.precipitation_sum[i], gust: data.daily.wind_gusts_10m_max[i] ?? a.gust ?? null,
+      wind: a.wind ?? null, hum: a.hum ?? null
+    });
+  });
+  return { daily, hourly };
+}
+
+async function fetchMetNo(lat, lon) {
+  // Pas horaires les ~2,5 premiers jours, puis pas de 6 h
+  const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat}&lon=${lon}`;
+  const data = await getJson(url);
+  const hourly = new Map();
+  for (const step of data.properties.timeseries) {
+    const d = new Date(step.time);
+    const key = `${localDate(d)}T${pad(d.getHours())}`;
+    const det = step.data.instant.details;
+    const period = step.data.next_1_hours ?? step.data.next_6_hours;
+    hourly.set(key, {
+      temp: det.air_temperature,
+      hum: det.relative_humidity ?? null,
+      wind: det.wind_speed != null ? det.wind_speed * 3.6 : null,
+      gust: det.wind_speed_of_gust != null ? det.wind_speed_of_gust * 3.6 : null,
+      precip: period ? period.details.precipitation_amount : null
+    });
+  }
+  const daily = new Map();
+  for (const [date, entries] of groupByDay(hourly)) daily.set(date, aggregate(entries));
+  return { daily, hourly };
+}
+
+async function fetchVisualCrossing(lat, lon, key) {
+  const url = `https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/` +
+    `${lat},${lon}?unitGroup=metric&include=days,hours&contentType=json&key=${encodeURIComponent(key)}`;
+  const data = await getJson(url);
+  const daily = new Map();
+  const hourly = new Map();
+  for (const d of data.days) {
+    daily.set(d.datetime, { tmin: d.tempmin, tmax: d.tempmax, precip: d.precip,
+                            wind: d.windspeed, gust: d.windgust, hum: d.humidity });
+    for (const h of d.hours ?? []) {
+      hourly.set(`${d.datetime}T${h.datetime.slice(0, 2)}`, {
+        temp: h.temp, precip: h.precip, hum: h.humidity, wind: h.windspeed, gust: h.windgust
+      });
+    }
+  }
+  return { daily, hourly };
+}
+
+const SOURCES = [
+  { name: 'Open-Meteo', fetch: (lat, lon) => fetchOpenMeteo(lat, lon) },
+  { name: 'Météo-France (AROME/ARPEGE)', fetch: (lat, lon) => fetchOpenMeteo(lat, lon, 'meteofrance_seamless') },
+  { name: 'MET Norway', fetch: (lat, lon) => fetchMetNo(lat, lon) },
+  { name: 'Visual Crossing', fetch: (lat, lon, key) => fetchVisualCrossing(lat, lon, key), needsKey: true }
+];
+
+async function geocode(name) {
+  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1&language=fr&format=json`;
+  const data = await getJson(url);
+  const r = data.results?.[0];
+  if (!r) throw new Error('Lieu introuvable');
+  return { lat: r.latitude, lon: r.longitude, label: `${r.name}${r.admin1 ? ', ' + r.admin1 : ''}` };
+}
+
+/* ---------- Lune ---------- */
+const SYNODIC = 29.530588853;
+const NEW_MOON_REF = Date.UTC(2000, 0, 6, 18, 14); // nouvelle lune de référence
+const MOON_PHASES = [
+  ['🌑', 'Nouvelle lune'], ['🌒', 'Premier croissant'], ['🌓', 'Premier quartier'], ['🌔', 'Gibbeuse croissante'],
+  ['🌕', 'Pleine lune'], ['🌖', 'Gibbeuse décroissante'], ['🌗', 'Dernier quartier'], ['🌘', 'Dernier croissant']
+];
+function moonPhase(dayKey) {
+  const t = new Date(`${dayKey}T12:00:00`).getTime();
+  const age = (((t - NEW_MOON_REF) / 86400000) % SYNODIC + SYNODIC) % SYNODIC;
+  const idx = Math.round(age / SYNODIC * 8) % 8;
+  const illum = Math.round((1 - Math.cos(2 * Math.PI * age / SYNODIC)) / 2 * 100);
+  return { icon: MOON_PHASES[idx][0], name: MOON_PHASES[idx][1], illum };
+}
+
+/* ---------- Affichage ---------- */
+const f = (n, digits = 1) => (n == null || Number.isNaN(n) ? '–' : n.toFixed(digits));
+const withUnit = (n, unit, digits = 1) => (n == null || Number.isNaN(n) ? '–' : `${n.toFixed(digits)} ${unit}`);
+
+function frostCell(tmin, anyMin) {
+  if (tmin == null) return '–';
+  if (tmin <= 0) return '<span class="ko">❄ Gel</span>';
+  if (tmin <= 2) return '<span class="warn">⚠ Risque de gel</span>';
+  if (anyMin != null && anyMin <= 2) return '<span class="warn">Possible (1 source)</span>';
+  return '<span class="muted">Aucun</span>';
+}
+
+function dayLabel(key) {
+  return new Date(`${key}T12:00:00`).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+function nextDayKeys() {
+  return Array.from({ length: DAYS }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    return localDate(d);
+  });
+}
+
+function averageValues(list) {
+  const out = {};
+  for (const k of ['tmin', 'tmax', 'temp', 'wind', 'gust', 'precip', 'hum']) out[k] = mean(list.map(v => v[k]));
+  out.anyMin = min(list.map(v => v.tmin ?? v.temp));
+  out.n = list.length;
+  return out;
+}
+
+// Colonnes selon le mode
+const DAY_HEAD = ['Jour', 'Lune', 'T min', 'T max', 'Vent moy.', 'Rafales', 'Pluie', 'Humidité', 'Gel'];
+const HOUR_HEAD = ['Heure', 'Temp.', 'Vent moy.', 'Rafales', 'Pluie', 'Humidité', 'Gel'];
+
+function dayRow(key, v, opts) {
+  const m = moonPhase(key);
+  const cls = opts.avg ? ' class="avg"' : '';
+  const srcCol = opts.avg ? `<td class="${v && v.n < 3 ? 'ko' : 'muted'}">${v ? v.n : 0}/${opts.total}</td>` : '';
+  return `<tr>
+    <td>${dayLabel(key)}</td>
+    <td><span class="moon" title="${m.name}, ${m.illum} %">${m.icon}</span></td>
+    <td${cls}>${withUnit(v?.tmin, '°C')}</td>
+    <td${cls}>${withUnit(v?.tmax, '°C')}</td>
+    <td${cls}>${withUnit(v?.wind, 'km/h', 0)}</td>
+    <td${cls}>${withUnit(v?.gust, 'km/h', 0)}</td>
+    <td${cls}>${withUnit(v?.precip, 'mm')}</td>
+    <td${cls}>${withUnit(v?.hum, '%', 0)}</td>
+    <td>${frostCell(v?.tmin, v?.anyMin)}</td>${srcCol}
+  </tr>`;
+}
+
+function hourRow(label, v, opts) {
+  const cls = opts.avg ? ' class="avg"' : '';
+  const srcCol = opts.avg ? `<td class="${v && v.n < 3 ? 'ko' : 'muted'}">${v ? v.n : 0}/${opts.total}</td>` : '';
+  return `<tr>
+    <td>${label}</td>
+    <td${cls}>${withUnit(v?.temp, '°C')}</td>
+    <td${cls}>${withUnit(v?.wind, 'km/h', 0)}</td>
+    <td${cls}>${withUnit(v?.gust, 'km/h', 0)}</td>
+    <td${cls}>${withUnit(v?.precip, 'mm')}</td>
+    <td${cls}>${withUnit(v?.hum, '%', 0)}</td>
+    <td>${frostCell(v?.temp, v?.anyMin)}</td>${srcCol}
+  </tr>`;
+}
+
+const tableHtml = (head, rows) =>
+  `<table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
+
+// Valeurs d'une source pour un créneau horaire (pas = 1 ou 3 h)
+function slotValues(src, dayKey, hour, step) {
+  const entries = [];
+  for (let h = hour; h < hour + step; h++) {
+    const e = src.hourly.get(`${dayKey}T${pad(h)}`);
+    if (e) entries.push(e);
+  }
+  return aggregate(entries);
+}
+
+const state = { loc: null, ok: [], all: [], mode: 'day', day: null };
+
+function render() {
+  const avgEl = document.getElementById('avg-table');
+  const cmpEl = document.getElementById('compare');
+  const daySel = document.getElementById('day-select');
+  const hint = document.getElementById('hint');
+  if (!state.loc) return;
+
+  const keys = nextDayKeys();
+  const total = state.ok.length;
+  daySel.hidden = state.mode === 'day';
+
+  if (!total) {
+    avgEl.innerHTML = '<p class="ko">Aucune source disponible.</p>';
+    cmpEl.innerHTML = '';
+    return;
+  }
+
+  if (state.mode === 'day') {
+    document.getElementById('avg-title').textContent = 'Moyenne des sources, jour par jour';
+    const head = [...DAY_HEAD, 'Sources'];
+    avgEl.innerHTML = tableHtml(head, keys.map(k => {
+      const vals = state.ok.map(s => s.data.daily.get(k)).filter(Boolean);
+      return dayRow(k, vals.length ? averageValues(vals) : null, { avg: true, total });
+    }));
+    // Comparatif jour par jour : un bloc par jour, une ligne par source
+    const cmpHead = ['Source', 'T min', 'T max', 'Vent moy.', 'Rafales', 'Pluie', 'Humidité', 'Gel'];
+    const cmpRows = [];
+    for (const k of keys) {
+      const m = moonPhase(k);
+      cmpRows.push(`<tr><th colspan="8" style="text-align:left;background:var(--bg)">${dayLabel(k)} <span class="moon" title="${m.name}, ${m.illum} %">${m.icon}</span></th></tr>`);
+      for (const s of state.all) {
+        const v = s.data?.daily.get(k);
+        cmpRows.push(`<tr>
+          <td>${s.name}</td>
+          <td>${withUnit(v?.tmin, '°C')}</td>
+          <td>${withUnit(v?.tmax, '°C')}</td>
+          <td>${withUnit(v?.wind, 'km/h', 0)}</td>
+          <td>${withUnit(v?.gust, 'km/h', 0)}</td>
+          <td>${withUnit(v?.precip, 'mm')}</td>
+          <td>${withUnit(v?.hum, '%', 0)}</td>
+          <td>${v ? frostCell(v.tmin, v.tmin) : '–'}</td>
+        </tr>`);
+      }
+    }
+    const missing = state.all.filter(s => !s.data).map(s => `${s.name} : ${s.error}`);
+    cmpEl.innerHTML = `<div class="table-wrap">${tableHtml(cmpHead, cmpRows)}</div>` +
+      (missing.length ? `<p class="muted">${missing.join(' · ')}</p>` : '');
+    hint.textContent = 'Rafales = rafale maximale du jour. Vent et humidité = moyennes du jour. Gel déduit de la T min (≤ 0 °C gel, ≤ 2 °C risque).';
+    return;
+  }
+
+  // Modes horaires
+  const step = state.mode === '3h' ? 3 : 1;
+  const dayKey = state.day && keys.includes(state.day) ? state.day : keys[0];
+  const hours = Array.from({ length: 24 / step }, (_, i) => i * step);
+  const labelOf = h => step === 1 ? `${pad(h)} h` : `${pad(h)}–${pad((h + 3) % 24)} h`;
+  document.getElementById('avg-title').textContent =
+    `Moyenne des sources, ${dayLabel(dayKey)} (${step === 1 ? 'toutes les heures' : 'toutes les 3 heures'})`;
+  const head = [...HOUR_HEAD, 'Sources'];
+  avgEl.innerHTML = tableHtml(head, hours.map(h => {
+    const vals = state.ok.map(s => slotValues(s.data, dayKey, h, step)).filter(Boolean);
+    return hourRow(labelOf(h), vals.length ? averageValues(vals) : null, { avg: true, total });
+  }));
+  cmpEl.innerHTML = state.all.map(s => {
+    const body = s.data
+      ? tableHtml(HOUR_HEAD, hours.map(h => {
+          const v = slotValues(s.data, dayKey, h, step);
+          return hourRow(labelOf(h), v ? { ...v, anyMin: v.temp } : null, {});
+        }))
+      : `<p class="muted">${s.error}</p>`;
+    return `<h3 class="src-title">${s.name}</h3><div class="table-wrap">${body}</div>`;
+  }).join('');
+  hint.textContent = 'Pluie = cumul sur le créneau. MET Norway ne donne des pas horaires que sur les ~2,5 premiers jours, ensuite des pas de 6 h : les créneaux sans donnée sont vides. Les sources horaires fiables vont jusqu\'à ~3 jours ; au-delà, regarder la vue par jour.';
+}
+
+function renderFrostSummary() {
+  const el = document.getElementById('frost-summary');
+  if (!state.ok.length) { el.innerHTML = ''; return; }
+  const risky = [];
+  for (const k of nextDayKeys()) {
+    const vals = state.ok.map(s => s.data.daily.get(k)).filter(Boolean);
+    if (!vals.length) continue;
+    const t = mean(vals.map(v => v.tmin));
+    if (t != null && t <= 2) risky.push(`${dayLabel(k)} (${t.toFixed(1)} °C)`);
+  }
+  el.innerHTML = risky.length
+    ? `<span class="warn">❄ Risque de gel :</span> ${risky.join(', ')}`
+    : '<span class="ok">Aucun risque de gel moyen prévu sur 7 jours.</span>';
+}
+
+async function refresh(loc) {
+  state.loc = loc;
+  const key = storage.get(VC_KEY) ?? '';
+  const statusEl = document.getElementById('sources-status');
+  statusEl.textContent = 'Chargement des prévisions…';
+
+  const active = SOURCES.filter(s => !s.needsKey || key);
+  const results = await Promise.allSettled(active.map(s => s.fetch(loc.lat, loc.lon, key)));
+
+  const statusParts = [];
+  const byName = new Map();
+  results.forEach((r, i) => {
+    const name = active[i].name;
+    if (r.status === 'fulfilled') {
+      byName.set(name, { name, data: r.value });
+      statusParts.push(`<span class="ok">✔ ${name}</span>`);
+    } else {
+      byName.set(name, { name, data: null, error: `Erreur : ${r.reason.message}` });
+      statusParts.push(`<span class="ko">✖ ${name} (${r.reason.message})</span>`);
+    }
+  });
+  state.all = SOURCES.map(s => byName.get(s.name) ?? { name: s.name, data: null, error: 'Clé API requise (voir ci-dessus).' });
+  state.ok = state.all.filter(s => s.data);
+
+  if (!key) statusParts.push('<span class="muted">Visual Crossing non configuré</span>');
+  if (state.ok.length < 3) statusParts.push('<span class="ko">⚠ Moins de 3 sources : moyenne peu fiable</span>');
+  statusEl.innerHTML = statusParts.join(' · ');
+
+  populateDays();
+  renderFrostSummary();
+  render();
+}
+
+function populateDays() {
+  const sel = document.getElementById('day-select');
+  const keys = nextDayKeys();
+  sel.innerHTML = keys.map(k => `<option value="${k}">${dayLabel(k)}</option>`).join('');
+  if (!state.day || !keys.includes(state.day)) state.day = keys[0];
+  sel.value = state.day;
+}
+
+function setLocation(loc) {
+  document.getElementById('place-label').textContent = `Lieu : ${loc.label}`;
+  storage.set(LOC_KEY, JSON.stringify(loc));
+  refresh(loc).catch(err => {
+    document.getElementById('sources-status').innerHTML = `<span class="ko">Erreur : ${err.message}</span>`;
+  });
+}
+
+document.querySelectorAll('button.tab').forEach(btn => btn.addEventListener('click', () => {
+  state.mode = btn.dataset.mode;
+  document.querySelectorAll('button.tab').forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
+  render();
+}));
+
+document.getElementById('day-select').addEventListener('change', e => { state.day = e.target.value; render(); });
+
+document.getElementById('search-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const name = document.getElementById('place').value.trim();
+  try {
+    setLocation(await geocode(name));
+  } catch (err) {
+    document.getElementById('place-label').textContent = err.message;
+  }
+});
+
+document.getElementById('geo').addEventListener('click', () => {
+  if (!navigator.geolocation) {
+    document.getElementById('place-label').textContent = 'Géolocalisation non disponible.';
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    pos => setLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude, label: 'Position actuelle' }),
+    () => { document.getElementById('place-label').textContent = 'Position refusée.'; }
+  );
+});
+
+document.getElementById('save-key').addEventListener('click', () => {
+  const value = document.getElementById('vc-key').value.trim();
+  if (value) storage.set(VC_KEY, value);
+  const loc = JSON.parse(storage.get(LOC_KEY) || 'null');
+  if (loc) refresh(loc).catch(() => {});
+});
+
+(function init() {
+  if (storage.get(VC_KEY)) document.getElementById('vc-key').placeholder = 'Clé enregistrée';
+  const loc = JSON.parse(storage.get(LOC_KEY) || 'null');
+  if (loc) setLocation(loc);
+})();
+</script>
+</body>
+</html>

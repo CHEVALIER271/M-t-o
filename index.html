@@ -295,7 +295,13 @@ function hourRow(label, v, opts) {
   </tr>`;
 }
 
-const tableHtml = (head, rows) =>
+// Met la précision entre parenthèses sur une 2e ligne : "Météo-France (AROME/ARPEGE)"
+function srcLabel(name) {
+  const m = name.match(/^(.*?)\s*(\(.*\))$/);
+  return m ? `${m[1]}<br><small class="muted">${m[2]}</small>` : name;
+}
+
+const tableHtml =(head, rows) =>
   `<table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
 
 // Valeurs d'une source pour un créneau horaire (pas = 1 ou 3 h)
@@ -343,7 +349,7 @@ function render() {
       for (const s of state.all) {
         const v = s.data?.daily.get(k);
         cmpRows.push(`<tr>
-          <td>${s.name}</td>
+          <td>${srcLabel(s.name)}</td>
           <td>${withUnit(v?.tmin, '°C')}</td>
           <td>${withUnit(v?.tmax, '°C')}</td>
           <td>${withUnit(v?.wind, 'km/h', 0)}</td>
@@ -380,7 +386,7 @@ function render() {
           return hourRow(labelOf(h), v ? { ...v, anyMin: v.temp } : null, {});
         }))
       : `<p class="muted">${s.error}</p>`;
-    return `<h3 class="src-title">${s.name}</h3><div class="table-wrap">${body}</div>`;
+    return `<h3 class="src-title">${srcLabel(s.name)}</h3><div class="table-wrap">${body}</div>`;
   }).join('');
   hint.textContent = 'Pluie = cumul sur le créneau. MET Norway ne donne des pas horaires que sur les ~2,5 premiers jours, ensuite des pas de 6 h : les créneaux sans donnée sont vides. Les sources horaires fiables vont jusqu\'à ~3 jours ; au-delà, regarder la vue par jour.';
 }

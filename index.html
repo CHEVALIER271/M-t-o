@@ -70,7 +70,7 @@ td.avg { font-weight: 700; color: var(--accent); }
         <input id="vc-key" type="password" placeholder="Clé API Visual Crossing (optionnel)">
         <button type="button" id="save-key" class="secondary">Enregistrer la clé</button>
       </div>
-      <p class="muted">Visual Crossing est la 6e source. Clé gratuite sur visualcrossing.com. Sans clé, il reste 5 sources.</p>
+      <p class="muted">Visual Crossing est la 5e source. Clé gratuite sur visualcrossing.com. Sans clé, il reste 4 sources.</p>
     </div>
   </div>
 
@@ -218,7 +218,6 @@ async function fetchVisualCrossing(lat, lon, key) {
 const SOURCES = [
   { name: 'Open-Meteo', fetch: (lat, lon) => fetchOpenMeteo(lat, lon) },
   { name: 'Météo-France (AROME/ARPEGE)', fetch: (lat, lon) => fetchOpenMeteo(lat, lon, 'meteofrance_seamless') },
-  { name: 'GFS (NOAA, États-Unis)', fetch: (lat, lon) => fetchOpenMeteo(lat, lon, 'gfs_seamless') },
   { name: 'ECMWF (Europe)', fetch: (lat, lon) => fetchOpenMeteo(lat, lon, 'ecmwf_ifs025') },
   { name: 'MET Norway', fetch: (lat, lon) => fetchMetNo(lat, lon) },
   { name: 'Visual Crossing', fetch: (lat, lon, key) => fetchVisualCrossing(lat, lon, key), needsKey: true }
